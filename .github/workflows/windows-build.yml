@@ -1,0 +1,67 @@
+name: Windows Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Validate offsets and build x64
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show runner state
+        shell: pwsh
+        run: |
+          $PSVersionTable
+          cmake --version
+          python --version
+          Get-ComputerInfo | Select-Object OsName, OsVersion, CsProcessors, CsTotalPhysicalMemory
+          Get-PSDrive -PSProvider FileSystem
+
+      - name: Validate offset config
+        shell: pwsh
+        run: python scripts/ci/validate_offsets.py Main.txt
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset windows-msvc-x64
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset windows-msvc-x64-release
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item build/windows-msvc-x64/bin/Release/FractalSyntax30XX.exe out/FractalSyntax30XX.exe
+          Get-FileHash out/FractalSyntax30XX.exe -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  FractalSyntax30XX.exe" } |
+            Set-Content -Encoding ascii out/SHA256SUMS
+          Get-ChildItem out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fractal-syntax-30xx-windows-x64-${{ github.run_number }}
+          path: |
+            out/FractalSyntax30XX.exe
+            out/SHA256SUMS
+          if-no-files-found: error
