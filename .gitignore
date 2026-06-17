@@ -1,0 +1,7 @@
+build/
+out/
+__pycache__/
+*.py[cod]
+*.user
+*.suo
+*.vcxproj.user
