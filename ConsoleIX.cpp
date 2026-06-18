@@ -13,10 +13,10 @@
 #include <sstream>
 #include <string>
 #include <iostream>
+#include <fstream>
 #include <wininet.h>
 #include <shellapi.h>
 #include "proc.h"
-#include "mem.h"
 #include "Helpers.h"
 #include "Signature.h"
 
@@ -26,6 +26,12 @@
 DWORD procId = 0;
 HANDLE hProcess = nullptr;
 uintptr_t moduleBase = 0;
+
+constexpr const wchar_t* PROCESS_NAME = L"30XX.exe";
+constexpr const char* OFFSETS_URL =
+    "https://raw.githubusercontent.com/Fractal-Echo/Fractal-Syntax-30XX/main/Main.txt";
+
+std::string DownloadOffsets(const char* url);
 
 
 struct Patch
@@ -101,6 +107,217 @@ uintptr_t WingsAddr = 0;
 uintptr_t EntityListAddr = 0;
 uintptr_t ScrapCmpAddr = 0;
 uintptr_t ScrapAddr = 0;
+
+bool IsProcessAlive(HANDLE process)
+{
+    return process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+}
+
+template <typename T>
+bool SafeRead(HANDLE process, uintptr_t address, T& out)
+{
+    if (!IsProcessAlive(process) || address == 0)
+        return false;
+
+    SIZE_T bytesRead = 0;
+    return ReadProcessMemory(process, (LPCVOID)address, &out, sizeof(T), &bytesRead)
+        && bytesRead == sizeof(T);
+}
+
+template <typename T>
+bool SafeRead(uintptr_t address, T& out)
+{
+    return SafeRead(hProcess, address, out);
+}
+
+template <typename T>
+bool SafeWrite(uintptr_t address, const T& value)
+{
+    if (!IsProcessAlive(hProcess) || address == 0)
+        return false;
+
+    SIZE_T bytesWritten = 0;
+    return WriteProcessMemory(hProcess, (LPVOID)address, &value, sizeof(T), &bytesWritten)
+        && bytesWritten == sizeof(T);
+}
+
+bool SafePatch(uintptr_t address, const std::vector<BYTE>& bytes)
+{
+    if (!IsProcessAlive(hProcess) || address == 0 || bytes.empty())
+        return false;
+
+    DWORD oldProtect = 0;
+    if (!VirtualProtectEx(hProcess, (LPVOID)address, bytes.size(), PAGE_EXECUTE_READWRITE, &oldProtect))
+        return false;
+
+    SIZE_T bytesWritten = 0;
+    BOOL writeOk = WriteProcessMemory(hProcess, (LPVOID)address, bytes.data(), bytes.size(), &bytesWritten);
+
+    DWORD ignored = 0;
+    VirtualProtectEx(hProcess, (LPVOID)address, bytes.size(), oldProtect, &ignored);
+
+    return writeOk && bytesWritten == bytes.size();
+}
+
+bool TryResolvePointer(uintptr_t baseAddress, const std::vector<unsigned int>& offsets, uintptr_t& resolvedAddress)
+{
+    uintptr_t address = baseAddress;
+    for (unsigned int offset : offsets)
+    {
+        if (!SafeRead(address, address) || address == 0)
+            return false;
+
+        address += offset;
+    }
+
+    resolvedAddress = address;
+    return resolvedAddress != 0;
+}
+
+bool TryGetBase(const std::string& name, uintptr_t& address)
+{
+    auto it = BaseMap.find(name);
+    if (it == BaseMap.end() || it->second == 0)
+        return false;
+
+    address = it->second;
+    return true;
+}
+
+bool TryGetAddress(const std::string& name, uintptr_t& address)
+{
+    auto it = AddressMap.find(name);
+    if (it == AddressMap.end() || it->second == 0)
+        return false;
+
+    address = it->second;
+    return true;
+}
+
+bool RequireAddress(const std::string& name, uintptr_t& address, std::string& error)
+{
+    if (TryGetAddress(name, address))
+        return true;
+
+    error = "Missing or unresolved address: " + name;
+    return false;
+}
+
+void StopRainbowThread()
+{
+    if (bRainbow)
+        bRainbow = false;
+
+    stopThread = true;
+    if (rainbowThread.joinable())
+        rainbowThread.join();
+    stopThread = false;
+}
+
+void ClearRuntimeState()
+{
+    procId = 0;
+    moduleBase = 0;
+
+    BaseMap.clear();
+    AddressMap.clear();
+    PatchMap.clear();
+
+    LocalPlayerOffset = 0;
+    IonCubeAddr = 0;
+    BlueCubeAddr = 0;
+    SalvageAddr = 0;
+    SalvageBaseAddr = 0;
+    CatAddr = 0;
+    healthAddr = 0;
+    BypassColorAddr = 0;
+    EnergyAddr = 0;
+    AugBaseAddr = 0;
+    Aug1Addr = 0;
+    JumpAddr = 0;
+    MemoriaAddr = 0;
+    TitanShards = 0;
+    SoulChipsAddr = 0;
+    ColorAddr = 0;
+    BoltsAddr = 0;
+    MWeaponAddr = 0;
+    QWeaponAddr = 0;
+    WWeaponAddr = 0;
+    EWeaponAddr = 0;
+    PhysicalDamagePtr = 0;
+    AbilityDamagePtr = 0;
+    SpeedPtr = 0;
+    JumpHeightPtr = 0;
+    xCoord = 0;
+    zCoord = 0;
+    WingsAddr = 0;
+    EntityListAddr = 0;
+    ScrapCmpAddr = 0;
+    ScrapAddr = 0;
+    OMWeaponId = 0;
+
+    bHealth = false;
+    bEnergy = false;
+    bInstant = false;
+    bJump = false;
+    bTest2 = false;
+    bTest3 = false;
+    bScrap = false;
+    ItsElectric = false;
+}
+
+void DetachProcess()
+{
+    StopRainbowThread();
+
+    if (hProcess)
+    {
+        CloseHandle(hProcess);
+        hProcess = nullptr;
+    }
+
+    ClearRuntimeState();
+}
+
+std::string ReadFileToString(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return "";
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+std::string LoadLocalOffsets()
+{
+    char exePath[MAX_PATH] = {};
+    DWORD pathLength = GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    if (pathLength > 0 && pathLength < MAX_PATH)
+    {
+        std::string path(exePath, pathLength);
+        size_t slash = path.find_last_of("\\/");
+        if (slash != std::string::npos)
+        {
+            std::string nextToExe = path.substr(0, slash + 1) + "Main.txt";
+            std::string data = ReadFileToString(nextToExe);
+            if (!data.empty())
+                return data;
+        }
+    }
+
+    return ReadFileToString("Main.txt");
+}
+
+std::string LoadOffsetsData()
+{
+    std::string data = LoadLocalOffsets();
+    if (!data.empty())
+        return data;
+
+    return DownloadOffsets(OFFSETS_URL);
+}
 
 
 
@@ -199,8 +416,10 @@ void ParseOffsets(const std::string& data)
             while (std::getline(ss, item, ','))
                 offsets.push_back(strtoul(item.c_str(), nullptr, 16));
 
-            if (BaseMap.find(baseName) != BaseMap.end())
-                AddressMap[key] = FindDMAAddy(hProcess, BaseMap[baseName], offsets);
+            uintptr_t baseAddress = 0;
+            uintptr_t resolvedAddress = 0;
+            if (TryGetBase(baseName, baseAddress) && TryResolvePointer(baseAddress, offsets, resolvedAddress))
+                AddressMap[key] = resolvedAddress;
         }
         else if (section == "[PATCH]")
         {
@@ -235,7 +454,132 @@ bool ApplyPatchByName(const std::string& name, bool enabled)
     if (bytes.empty())
         return false;
 
-    mem::PatchEx((BYTE*)p.address, (BYTE*)bytes.data(), (unsigned int)bytes.size(), hProcess);
+    return SafePatch(p.address, bytes);
+}
+
+bool ResolveRuntimeAddresses(std::string& error)
+{
+    uintptr_t localPlayer = 0;
+    uintptr_t newHealth = 0;
+    uintptr_t newEnergy = 0;
+    uintptr_t newMWeapon = 0;
+    uintptr_t newQWeapon = 0;
+    uintptr_t newWWeapon = 0;
+    uintptr_t newEWeapon = 0;
+    uintptr_t newPhysicalDamage = 0;
+    uintptr_t newAbilityDamage = 0;
+    uintptr_t newSpeed = 0;
+    uintptr_t newJumpHeight = 0;
+    uintptr_t newColor = 0;
+    uintptr_t newIonCube = 0;
+    uintptr_t newBlueCube = 0;
+    uintptr_t newBolts = 0;
+    uintptr_t newMemoria = 0;
+    uintptr_t newSoulChips = 0;
+
+    if (!TryGetBase("LocalPlayer", localPlayer))
+    {
+        error = "Missing LocalPlayer base";
+        return false;
+    }
+
+    if (!RequireAddress("Health", newHealth, error) ||
+        !RequireAddress("Energy", newEnergy, error) ||
+        !RequireAddress("MWeapon", newMWeapon, error) ||
+        !RequireAddress("QWeapon", newQWeapon, error) ||
+        !RequireAddress("WWeapon", newWWeapon, error) ||
+        !RequireAddress("EWeapon", newEWeapon, error) ||
+        !RequireAddress("PhysicalDamage", newPhysicalDamage, error) ||
+        !RequireAddress("AbilityDamage", newAbilityDamage, error) ||
+        !RequireAddress("Speed", newSpeed, error) ||
+        !RequireAddress("JumpHeight", newJumpHeight, error) ||
+        !RequireAddress("Color", newColor, error) ||
+        !RequireAddress("IonCube", newIonCube, error) ||
+        !RequireAddress("BlueCube", newBlueCube, error) ||
+        !RequireAddress("Bolts", newBolts, error) ||
+        !RequireAddress("Memoria", newMemoria, error) ||
+        !RequireAddress("SoulChips", newSoulChips, error))
+    {
+        return false;
+    }
+
+    int originalWeaponId = 0;
+    if (!SafeRead(newMWeapon, originalWeaponId))
+    {
+        error = "Target address MWeapon is not readable yet";
+        return false;
+    }
+
+    LocalPlayerOffset = localPlayer;
+    healthAddr = newHealth;
+    EnergyAddr = newEnergy;
+    MWeaponAddr = newMWeapon;
+    QWeaponAddr = newQWeapon;
+    WWeaponAddr = newWWeapon;
+    EWeaponAddr = newEWeapon;
+    PhysicalDamagePtr = newPhysicalDamage;
+    AbilityDamagePtr = newAbilityDamage;
+    SpeedPtr = newSpeed;
+    JumpHeightPtr = newJumpHeight;
+    ColorAddr = newColor;
+    IonCubeAddr = newIonCube;
+    BlueCubeAddr = newBlueCube;
+    BoltsAddr = newBolts;
+    MemoriaAddr = newMemoria;
+    SoulChipsAddr = newSoulChips;
+    OMWeaponId = originalWeaponId;
+
+    auto scrapCmp = PatchMap.find("ScrapCmp");
+    ScrapCmpAddr = scrapCmp != PatchMap.end() ? scrapCmp->second.address : 0;
+
+    auto scrap = PatchMap.find("Scrap");
+    ScrapAddr = scrap != PatchMap.end() ? scrap->second.address : 0;
+
+    return true;
+}
+
+bool TryAttachAndLoadOffsets(std::string& error)
+{
+    DetachProcess();
+
+    procId = GetProcId(PROCESS_NAME);
+    if (procId == 0)
+    {
+        error = "Process not found (is 30XX.exe running?)";
+        return false;
+    }
+
+    hProcess = OpenProcess(PROCESS_ALL_ACCESS, NULL, procId);
+    if (!hProcess)
+    {
+        error = "Failed to open process";
+        DetachProcess();
+        return false;
+    }
+
+    moduleBase = GetModuleBaseAddress(procId, PROCESS_NAME);
+    if (moduleBase == 0)
+    {
+        error = "Failed to find 30XX.exe module base";
+        DetachProcess();
+        return false;
+    }
+
+    std::string data = LoadOffsetsData();
+    if (data.empty())
+    {
+        error = "Failed to load offsets from local Main.txt or remote URL";
+        DetachProcess();
+        return false;
+    }
+
+    ParseOffsets(data);
+    if (!ResolveRuntimeAddresses(error))
+    {
+        DetachProcess();
+        return false;
+    }
+
     return true;
 }
 
@@ -253,133 +597,14 @@ void ResetAndReinit()
 {
     std::cout << "[~] Resetting...\n";
 
-    
-    if (bRainbow)
+    std::string error;
+    if (TryAttachAndLoadOffsets(error))
     {
-        stopThread = true;
-        if (rainbowThread.joinable())
-            rainbowThread.join();
-        bRainbow = false;
-        stopThread = false;
-    }
-
-   
-    if (hProcess)
-    {
-        CloseHandle(hProcess);
-        hProcess = nullptr;
-    }
-
-
-    procId = 0;
-    moduleBase = 0;
-
-    BaseMap.clear();
-    AddressMap.clear();
-    PatchMap.clear();
-
-    LocalPlayerOffset = 0;
-    IonCubeAddr = 0;
-    BlueCubeAddr = 0;
-    SalvageAddr = 0;
-    SalvageBaseAddr = 0;
-    CatAddr = 0;
-    healthAddr = 0;
-    BypassColorAddr = 0;
-    EnergyAddr = 0;
-    AugBaseAddr = 0;
-    Aug1Addr = 0;
-    JumpAddr = 0;
-    MemoriaAddr = 0;
-    TitanShards = 0;
-    SoulChipsAddr = 0;
-    ColorAddr = 0;
-    BoltsAddr = 0;
-    MWeaponAddr = 0;
-    QWeaponAddr = 0;
-    WWeaponAddr = 0;
-    EWeaponAddr = 0;
-    PhysicalDamagePtr = 0;
-    AbilityDamagePtr = 0;
-    SpeedPtr = 0;
-    JumpHeightPtr = 0;
-    xCoord = 0;
-    zCoord = 0;
-    WingsAddr = 0;
-    EntityListAddr = 0;
-    ScrapCmpAddr = 0;
-    ScrapAddr = 0;
-    OMWeaponId = 0;
-
- 
-    bHealth = false;
-    bEnergy = false;
-    bInstant = false;
-    bJump = false;
-    bTest2 = false;
-    bTest3 = false;
-    bScrap = false;
-    ItsElectric = false;
-
-    
-    procId = GetProcId(L"30XX.exe");
-    if (procId != 0)
-    {
-        hProcess = OpenProcess(PROCESS_ALL_ACCESS, NULL, procId);
-        if (hProcess)
-        {
-            moduleBase = GetModuleBaseAddress(procId, L"30XX.exe");
-
-            std::string data = DownloadOffsets(
-                "https://raw.githubusercontent.com/Jay-Lexington404/UwU-30XX/main/Main.txt"
-            );
-
-            if (!data.empty())
-            {
-                ParseOffsets(data);
-
-                LocalPlayerOffset = BaseMap["LocalPlayer"];
-
-                healthAddr = AddressMap["Health"];
-                EnergyAddr = AddressMap["Energy"];
-                MWeaponAddr = AddressMap["MWeapon"];
-                QWeaponAddr = AddressMap["QWeapon"];
-                WWeaponAddr = AddressMap["WWeapon"];
-                EWeaponAddr = AddressMap["EWeapon"];
-                PhysicalDamagePtr = AddressMap["PhysicalDamage"];
-                AbilityDamagePtr = AddressMap["AbilityDamage"];
-                SpeedPtr = AddressMap["Speed"];
-                JumpHeightPtr = AddressMap["JumpHeight"];
-                ColorAddr = AddressMap["Color"];
-                IonCubeAddr = AddressMap["IonCube"];
-                BlueCubeAddr = AddressMap["BlueCube"];
-                BoltsAddr = AddressMap["Bolts"];
-                MemoriaAddr = AddressMap["Memoria"];
-                SoulChipsAddr = AddressMap["SoulChips"];
-
-                if (PatchMap.find("ScrapCmp") != PatchMap.end())
-                    ScrapCmpAddr = PatchMap["ScrapCmp"].address;
-
-                if (PatchMap.find("Scrap") != PatchMap.end())
-                    ScrapAddr = PatchMap["Scrap"].address;
-
-                ReadProcessMemory(hProcess, (LPCVOID)MWeaponAddr, &OMWeaponId, sizeof(OMWeaponId), nullptr);
-
-                std::cout << "[+] Reset successful! Process reattached.\n";
-            }
-            else
-            {
-                std::cout << "[-] Reset: Failed to load offsets\n";
-            }
-        }
-        else
-        {
-            std::cout << "[-] Reset: Failed to open process\n";
-        }
+        std::cout << "[+] Reset successful! Process reattached.\n";
     }
     else
     {
-        std::cout << "[-] Reset: Process not found (is 30XX.exe running?)\n";
+        std::cout << "[-] Reset: " << error << "\n";
     }
 }
 
@@ -399,12 +624,7 @@ void RainbowCycleLoop()
 
             if (ColorAddr && hProcess)
             {
-                mem::PatchEx(
-                    (BYTE*)ColorAddr,
-                    (BYTE*)&value,
-                    sizeof(value),
-                    hProcess
-                );
+                SafeWrite(ColorAddr, value);
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -424,7 +644,7 @@ void DrawDebugWatermark(HANDLE hProc, uintptr_t weaponAddr)
 
     int weaponID = 0;
     if (weaponAddr && hProc)
-        ReadProcessMemory(hProc, (LPCVOID)weaponAddr, &weaponID, sizeof(weaponID), nullptr);
+        SafeRead(hProc, weaponAddr, weaponID);
 
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "W-ID = %d", weaponID);
@@ -542,64 +762,24 @@ int main(int, char**)
             if (shouldCheck)
             {
                 lastCheckTime = now;
-                bool processLost = (hProcess && WaitForSingleObject(hProcess, 0) == WAIT_OBJECT_0);
-
-                if (processLost)
+                if (hProcess && !IsProcessAlive(hProcess))
                 {
                     std::cout << "[!] Process lost, reattaching...\n";
-                    ResetAndReinit();
+                    DetachProcess();
                 }
-                else if (procId == 0)
+
+                if (procId == 0)
                 {
-                    procId = GetProcId(L"30XX.exe");
-                    if (procId != 0)
+                    std::string error;
+                    if (TryAttachAndLoadOffsets(error))
                     {
-                        hProcess = OpenProcess(PROCESS_ALL_ACCESS, NULL, procId);
-                        if (hProcess)
-                        {
-                            moduleBase = GetModuleBaseAddress(procId, L"30XX.exe");
-                            std::string data = DownloadOffsets(
-                                "https://raw.githubusercontent.com/Jay-Lexington404/UwU-30XX/main/Main.txt"
-                            );
-                            if (!data.empty())
-                            {
-                                ParseOffsets(data);
-                                LocalPlayerOffset = BaseMap["LocalPlayer"];
-                                healthAddr = AddressMap["Health"];
-                                EnergyAddr = AddressMap["Energy"];
-                                MWeaponAddr = AddressMap["MWeapon"];
-                                QWeaponAddr = AddressMap["QWeapon"];
-                                WWeaponAddr = AddressMap["WWeapon"];
-                                EWeaponAddr = AddressMap["EWeapon"];
-                                PhysicalDamagePtr = AddressMap["PhysicalDamage"];
-                                AbilityDamagePtr = AddressMap["AbilityDamage"];
-                                SpeedPtr = AddressMap["Speed"];
-                                JumpHeightPtr = AddressMap["JumpHeight"];
-                                ColorAddr = AddressMap["Color"];
-                                IonCubeAddr = AddressMap["IonCube"];
-                                BlueCubeAddr = AddressMap["BlueCube"];
-                                BoltsAddr = AddressMap["Bolts"];
-                                MemoriaAddr = AddressMap["Memoria"];
-                                SoulChipsAddr = AddressMap["SoulChips"];
-                                if (PatchMap.find("ScrapCmp") != PatchMap.end())
-                                    ScrapCmpAddr = PatchMap["ScrapCmp"].address;
-                                if (PatchMap.find("Scrap") != PatchMap.end())
-                                    ScrapAddr = PatchMap["Scrap"].address;
-                                ReadProcessMemory(hProcess, (LPCVOID)MWeaponAddr,
-                                    &OMWeaponId, sizeof(OMWeaponId), nullptr);
-                                std::cout << "IX v0.0.2 Loaded! UwU\n";
-                                std::cout << "LocalPlayer: 0x" << std::hex << LocalPlayerOffset << "\n";
-                                std::cout << "Main Weapon: 0x" << std::hex << MWeaponAddr << "\n";
-                            }
-                            else
-                            {
-                                std::cout << "[-] Failed to load offsets\n";
-                            }
-                        }
+                        std::cout << "IX v0.0.2 Loaded! UwU\n";
+                        std::cout << "LocalPlayer: 0x" << std::hex << LocalPlayerOffset << "\n";
+                        std::cout << "Main Weapon: 0x" << std::hex << MWeaponAddr << std::dec << "\n";
                     }
                     else
                     {
-                        std::cout << "[~] Waiting for 30XX.exe...\n";
+                        std::cout << "[~] Waiting to attach: " << error << "\n";
                     }
                 }
             }
@@ -622,7 +802,7 @@ int main(int, char**)
 
                 ImGui::SameLine();
 
-                if (procId != 0 && hProcess)
+                if (procId != 0 && IsProcessAlive(hProcess))
                     ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "● Online");
                 else
                     ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.2f, 1.0f), "● Offline");
@@ -655,7 +835,7 @@ int main(int, char**)
                         rainbowThread.join();
                     int staticColorValue = 0;
                     if (ColorAddr && hProcess)
-                        mem::PatchEx((BYTE*)ColorAddr, (BYTE*)&staticColorValue, sizeof(staticColorValue), hProcess);
+                        SafeWrite(ColorAddr, staticColorValue);
                 }
             }
 
@@ -667,51 +847,51 @@ int main(int, char**)
 
             ImGui::InputInt("Main-Weapon", &MWeaponId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)MWeaponAddr, (BYTE*)&MWeaponId, sizeof(MWeaponId), hProcess);
+                SafeWrite(MWeaponAddr, MWeaponId);
 
             ImGui::InputInt("Q-Weapon", &QWeaponId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)QWeaponAddr, (BYTE*)&QWeaponId, sizeof(QWeaponId), hProcess);
+                SafeWrite(QWeaponAddr, QWeaponId);
 
             ImGui::InputInt("W-Weapon", &WWeaponId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)WWeaponAddr, (BYTE*)&WWeaponId, sizeof(WWeaponId), hProcess);
+                SafeWrite(WWeaponAddr, WWeaponId);
 
             ImGui::InputInt("E-Weapon", &EWeaponId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)EWeaponAddr, (BYTE*)&EWeaponId, sizeof(EWeaponId), hProcess);
+                SafeWrite(EWeaponAddr, EWeaponId);
 
             ImGui::InputInt("Damage", &PhysicalDamageId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)PhysicalDamagePtr, (BYTE*)&PhysicalDamageId, sizeof(PhysicalDamageId), hProcess);
+                SafeWrite(PhysicalDamagePtr, PhysicalDamageId);
 
             ImGui::InputInt("Ability-Damage", &AbilityDamageId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)AbilityDamagePtr, (BYTE*)&AbilityDamageId, sizeof(AbilityDamageId), hProcess);
+                SafeWrite(AbilityDamagePtr, AbilityDamageId);
 
             ImGui::InputInt("Speed", &SpeedId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)SpeedPtr, (BYTE*)&SpeedId, sizeof(SpeedId), hProcess);
+                SafeWrite(SpeedPtr, SpeedId);
 
             ImGui::InputInt("Jump-Height", &JumpHeightId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)JumpHeightPtr, (BYTE*)&JumpHeightId, sizeof(JumpHeightId), hProcess);
+                SafeWrite(JumpHeightPtr, JumpHeightId);
 
             ImGui::InputInt("Memoria", &MemoriaId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)MemoriaAddr, (BYTE*)&MemoriaId, sizeof(MemoriaId), hProcess);
+                SafeWrite(MemoriaAddr, MemoriaId);
 
             ImGui::InputInt("Bolts", &BoltsId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)BoltsAddr, (BYTE*)&BoltsId, sizeof(BoltsId), hProcess);
+                SafeWrite(BoltsAddr, BoltsId);
 
             ImGui::InputInt("Re-Rolls", &IonCubeId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)IonCubeAddr, (BYTE*)&IonCubeId, sizeof(IonCubeId), hProcess);
+                SafeWrite(IonCubeAddr, IonCubeId);
 
             ImGui::InputInt("Entropy", &BlueCubeId);
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) && ImGui::IsItemFocused())
-                mem::PatchEx((BYTE*)BlueCubeAddr, (BYTE*)&BlueCubeId, sizeof(BlueCubeId), hProcess);
+                SafeWrite(BlueCubeAddr, BlueCubeId);
 
             if (ImGui::Button("Exit"))
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
@@ -745,14 +925,14 @@ int main(int, char**)
         {
             const int god = 13337;
             Sleep(5);
-            mem::PatchEx((BYTE*)healthAddr, (BYTE*)&god, sizeof(god), hProcess);
+            SafeWrite(healthAddr, god);
         }
 
         if (bEnergy && EnergyAddr != 0)
         {
             const int uEnergy = 13337;
             Sleep(5);
-            mem::PatchEx((BYTE*)EnergyAddr, (BYTE*)&uEnergy, sizeof(uEnergy), hProcess);
+            SafeWrite(EnergyAddr, uEnergy);
         }
 
         ApplyPatchByName("JumpPatch", bJump);
@@ -767,13 +947,13 @@ int main(int, char**)
             static SHORT prevF4State = 0;
 
             int n1 = 0;
-            ReadProcessMemory(hProcess, (LPCVOID)MWeaponAddr, &n1, sizeof(n1), nullptr);
+            SafeRead(MWeaponAddr, n1);
 
             SHORT currentF3State = GetAsyncKeyState(VK_F3);
             if ((currentF3State & 0x8000) && !(prevF3State & 0x8000))
             {
                 n1--;
-                mem::PatchEx((BYTE*)MWeaponAddr, (BYTE*)&n1, sizeof(n1), hProcess);
+                SafeWrite(MWeaponAddr, n1);
             }
             prevF3State = currentF3State;
 
@@ -781,19 +961,19 @@ int main(int, char**)
             if ((currentF4State & 0x8000) && !(prevF4State & 0x8000))
             {
                 n1++;
-                mem::PatchEx((BYTE*)MWeaponAddr, (BYTE*)&n1, sizeof(n1), hProcess);
+                SafeWrite(MWeaponAddr, n1);
             }
             prevF4State = currentF4State;
         }
         else
         {
-            mem::PatchEx((BYTE*)MWeaponAddr, (BYTE*)&OMWeaponId, sizeof(OMWeaponId), hProcess);
+            SafeWrite(MWeaponAddr, OMWeaponId);
         }
 
         if (bTest3)
         {
             int n1 = 0;
-            ReadProcessMemory(hProcess, (LPCVOID)MWeaponAddr, &n1, sizeof(n1), nullptr);
+            SafeRead(MWeaponAddr, n1);
         }
 
         glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -804,15 +984,13 @@ int main(int, char**)
         glfwSwapBuffers(window);
     }
 
+    DetachProcess();
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
-
-    stopThread = true;
-    if (rainbowThread.joinable())
-        rainbowThread.join();
 
     return 0;
 }
