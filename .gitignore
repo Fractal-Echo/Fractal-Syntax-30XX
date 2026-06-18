@@ -1,9 +1,14 @@
 .vs/
+build/
+out/
 x64/
 Debug/
 Release/
+__pycache__/
+*.py[cod]
 *.user
 *.suo
+*.vcxproj.user
 *.pdb
 *.ilk
 *.obj

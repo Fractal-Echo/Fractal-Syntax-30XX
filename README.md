@@ -1,22 +1,34 @@
 # Fractal Syntax 30XX
 
-Fractal Syntax 30XX is an external local-use 30XX developer/customization menu. This repository contains the menu source, Visual Studio project files from upstream, bundled headers/libs, and `Main.txt` offset configuration used by the application at runtime.
+Fractal Syntax 30XX is an external local-use 30XX developer/customization menu. This repository contains the menu source, Visual Studio/CMake build assets, bundled headers/libs, and `Main.txt` offset configuration used by the application at runtime.
 
 ## Build Status
 
 This is a Windows project and requires Windows build tooling.
 
-Current limitation: this rebased tree includes `ConsoleIX.vcxproj`, `ConsoleIX.vcxproj.filters`, and `ConsoleIX.vcxproj.user`, but no `.sln`, `CMakeLists.txt`, or `Makefile` is checked in. The Visual Studio project was not verified in this environment because Windows compiler tooling was not detected.
+Current limitation: this tree includes `ConsoleIX.vcxproj`, `ConsoleIX.vcxproj.filters`, `ConsoleIX.vcxproj.user`, `CMakeLists.txt`, and `CMakePresets.json`, but no `.sln` or `Makefile` is checked in. The Windows build was not verified in this environment because Windows compiler tooling was not detected.
+
+The CMake path is Windows-only and is configured for Visual Studio 17 2022 x64:
+
+```powershell
+cmake --preset windows-msvc-x64
+cmake --build --preset windows-msvc-x64-release
+```
+
+CI support is provided by `.github/workflows/windows-build.yml`, which validates `Main.txt`, configures CMake, builds the Release target, and uploads the executable plus SHA256 sums.
 
 Known source/dependency inputs currently checked in:
 
 - `ConsoleIX.cpp`
 - `ConsoleIX.vcxproj`
 - `ConsoleIX.vcxproj.filters`
+- `CMakeLists.txt`
+- `CMakePresets.json`
 - `proc.cpp` / `proc.h`
 - `mem.cpp` / `mem.h`
 - `Signature.cpp` / `Signature.h`
 - `Helpers.h`
+- `scripts/ci/validate_offsets.py`
 - `include/`
 - `lib/`
 - `Main.txt`

@@ -9,6 +9,7 @@
 - Changed failed attach behavior to detach, clear runtime state, and retry later.
 - Changed offset loading to prefer local `Main.txt`, then fall back to this fork's raw `Main.txt`.
 - Added `.gitignore` entries for common Visual Studio and Windows build outputs.
+- Added remote build/review assets from `origin/codex/windows-actions-build-env`: `.gitattributes`, CMake config, CMake presets, Windows GitHub Actions workflow, and offset validation script.
 - Added README build/review documentation.
 
 ## Why The Change Was Needed
@@ -28,6 +29,8 @@ The new flow fails closed instead: required addresses must resolve, `MWeapon` mu
 - Failed attach paths call `DetachProcess()`.
 - Process loss and shutdown call `DetachProcess()`.
 - `ResolveRuntimeAddresses()` requires address resolution and a successful `SafeRead` probe before attach success.
+- `python3 scripts/ci/validate_offsets.py Main.txt` passed in this environment.
+- `git diff --check` passed after adding build assets.
 
 ## Not Verified In This Environment
 
@@ -35,8 +38,9 @@ The new flow fails closed instead: required addresses must resolve, `MWeapon` mu
 - Windows x64 Release build.
 - Runtime behavior against a live `30XX.exe` process.
 - Manual UI toggle behavior in-game.
+- CMake configure/build, because `cmake` is not installed in this environment.
 
-Build verification was not possible because Windows compiler tooling was not detected in this environment. After rebasing onto `upstream/main`, the tree includes `ConsoleIX.vcxproj`, `ConsoleIX.vcxproj.filters`, and `ConsoleIX.vcxproj.user`, but no `.sln`, `CMakeLists.txt`, or `Makefile` is checked in.
+Build verification was not possible because Windows compiler tooling was not detected in this environment. After adding the missing remote build assets, the tree includes `ConsoleIX.vcxproj`, `ConsoleIX.vcxproj.filters`, `ConsoleIX.vcxproj.user`, `CMakeLists.txt`, and `CMakePresets.json`, but no `.sln` or `Makefile` is checked in.
 
 ## Windows Manual Tests Still Required
 
